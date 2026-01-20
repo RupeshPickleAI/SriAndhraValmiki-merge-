@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: media-upload-api
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        scope: run
+      - key: JWT_SECRET
+        scope: run
+      - key: TWILIO_ACCOUNT_SID
+        scope: run
+      - key: TWILIO_AUTH_TOKEN
+        scope: run
+      - key: TWILIO_FROM_NUMBER
+        scope: run
+      - key: GMAIL_USER
+        scope: run
+      - key: GMAIL_APP_PASSWORD
+        scope: run
+      - key: STATIC_ADMIN_EMAIL
+        scope: run
+      - key: STATIC_ADMIN_PASSWORD
+        scope: run
