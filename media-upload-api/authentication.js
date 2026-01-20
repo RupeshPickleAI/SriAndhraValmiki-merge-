@@ -23,18 +23,73 @@ const {
 
   GMAIL_USER,
   GMAIL_APP_PASSWORD,
-
-  STATIC_ADMIN_EMAIL,
-  STATIC_ADMIN_PASSWORD,
 } = process.env;
 
-const JWT_SECRET_FINAL = JWT_SECRET || "dev_jwt_secret_change_me";
+const JWT_SECRET_FINAL = JWT_SECRET || "dev_jwt_secret_change_me";// ✅ USER LOGIN WITH PASSWORD (NO OTP IF ALREADY VERIFIED)
+// POST /api/auth/login/password
+// ✅ USER LOGIN WITH PASSWORD (NO OTP IF ALREADY VERIFIED)
+// POST /api/auth/login/password
+router.post("/login/password", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+    const password = String(req.body.password || "");
 
-const STATIC_ADMIN_EMAIL_FINAL = String(STATIC_ADMIN_EMAIL || "admin@gmail.com")
-  .trim()
-  .toLowerCase();
+    if (!email) return res.status(400).json({ success: false, error: "Email is required" });
+    if (!isEmail(email)) return res.status(400).json({ success: false, error: "Invalid email" });
+    if (!passwordOk(password)) {
+      return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
+    }
 
-const STATIC_ADMIN_PASSWORD_FINAL = String(STATIC_ADMIN_PASSWORD || "Admin@12345").trim();
+    // prevent admin login via user endpoint
+    if (email === STATIC_ADMIN_EMAIL_FINAL) {
+      return res.status(403).json({ success: false, error: "Use /api/auth/admin/login for admin." });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+
+    const storedHash = getStoredPasswordHash(user);
+    if (!storedHash) return res.status(500).json({ success: false, error: "Password hash missing in DB." });
+
+    const ok = await bcrypt.compare(password, storedHash);
+    if (!ok) return res.status(401).json({ success: false, error: "Invalid password" });
+
+    // ✅ if not verified yet, force OTP flow
+    const verified = !!user.isEmailVerified || !!user.isPhoneVerified;
+    if (!verified) {
+      return res.json({
+        success: true,
+        otpRequired: true,
+        message: "OTP verification required. Call /api/auth/login/request-otp",
+      });
+    }
+
+    user.lastLoginAt = new Date();
+    await user.save();
+
+    const token = signToken({
+      userId: user._id.toString(),
+      role: user.role,
+      email: user.email || null,
+      phone: user.phone || null,
+    });
+
+    return res.json({
+      success: true,
+      otpRequired: false,
+      token,
+      user: { id: user._id, role: user.role, email: user.email, phone: user.phone || null },
+    });
+  } catch (e) {
+    console.error("❌ login/password:", e?.message || e);
+    return res.status(500).json({ success: false, error: "Login failed" });
+  }
+});
+
+
+// ✅ FIXED STATIC ADMIN
+const STATIC_ADMIN_EMAIL_FINAL = "sriandhravalmiki@gmail.com";
+const STATIC_ADMIN_PASSWORD_FINAL = "rama@2026"; // requested
 
 // -------------------- HELPERS --------------------
 function normalizeEmail(email) {
@@ -64,19 +119,8 @@ function hashOtp(identifier, otp) {
 function getStoredPasswordHash(user) {
   return user?.passwordHash || user?.password || null;
 }
-
-// -------------------- JWT --------------------
-function signToken(user) {
-  return jwt.sign(
-    {
-      userId: user._id?.toString?.() || "unknown",
-      role: user.role,
-      email: user.email || null,
-      phone: user.phone || null,
-    },
-    JWT_SECRET_FINAL,
-    { expiresIn: JWT_EXPIRES_IN }
-  );
+function signToken(payload) {
+  return jwt.sign(payload, JWT_SECRET_FINAL, { expiresIn: JWT_EXPIRES_IN });
 }
 
 // ✅ EXPORTABLE AUTH MIDDLEWARE
@@ -98,6 +142,12 @@ function authMiddleware(req, res, next) {
 function requireAdmin(req, res, next) {
   if (!req.auth) return res.status(401).json({ success: false, error: "Unauthorized" });
   if (req.auth.role !== "admin") return res.status(403).json({ success: false, error: "Admin only" });
+
+  // ensure it is our static admin identity
+  if (String(req.auth.email || "").toLowerCase() !== STATIC_ADMIN_EMAIL_FINAL) {
+    return res.status(403).json({ success: false, error: "Invalid admin identity" });
+  }
+
   return next();
 }
 
@@ -168,7 +218,30 @@ async function sendEmailOtp(email, otp) {
 
 // -------------------- ROUTES --------------------
 
-// SIGNUP
+// ✅ STATIC ADMIN LOGIN (GET)
+// GET /api/auth/admin/login?email=admin@gmail.com&password=Admin
+router.get("/admin/login", (req, res) => {
+  const email = normalizeEmail(req.query.email);
+  const password = String(req.query.password || "");
+
+  if (email !== STATIC_ADMIN_EMAIL_FINAL || password !== STATIC_ADMIN_PASSWORD_FINAL) {
+    return res.status(401).json({ success: false, error: "Invalid admin credentials" });
+  }
+
+  const token = signToken({
+    userId: "admin_static",
+    role: "admin",
+    email: STATIC_ADMIN_EMAIL_FINAL,
+  });
+
+  return res.json({
+    success: true,
+    token,
+    user: { id: "admin_static", role: "admin", email: STATIC_ADMIN_EMAIL_FINAL },
+  });
+});
+
+// SIGNUP (normal user only)
 router.post("/signup", async (req, res) => {
   try {
     const firstName = String(req.body.firstName || "").trim();
@@ -182,31 +255,25 @@ router.post("/signup", async (req, res) => {
     if (!lastName) return res.status(400).json({ success: false, error: "Last name is required" });
     if (!email) return res.status(400).json({ success: false, error: "Email is required" });
     if (!isEmail(email)) return res.status(400).json({ success: false, error: "Invalid email" });
-    if (phone && !isE164(phone)) {
-      return res.status(400).json({ success: false, error: "Phone must be E.164 like +919876543210" });
-    }
-    if (!passwordOk(password)) {
-      return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
-    }
+    if (phone && !isE164(phone)) return res.status(400).json({ success: false, error: "Phone must be E.164 like +919876543210" });
+    if (!passwordOk(password)) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
 
     const exists = await User.findOne({ $or: [{ email }, ...(phone ? [{ phone }] : [])] });
     if (exists) return res.status(409).json({ success: false, error: "User already exists" });
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    const createPayload = {
+    const user = await User.create({
       firstName,
       lastName,
       email,
+      ...(phone ? { phone } : {}),
       passwordHash,
-      password: passwordHash, // compat
+      password: passwordHash,
       role: "user",
       isEmailVerified: false,
       isPhoneVerified: false,
-    };
-    if (phone) createPayload.phone = phone;
-
-    const user = await User.create(createPayload);
+    });
 
     return res.json({
       success: true,
@@ -219,16 +286,14 @@ router.post("/signup", async (req, res) => {
   }
 });
 
-// LOGIN - REQUEST OTP (smart)
+// LOGIN - REQUEST OTP (users only)
 router.post("/login/request-otp", requestOtpLimiter, async (req, res) => {
   try {
     const channel = String(req.body.channel || "").trim();
     const identifierRaw = String(req.body.identifier || "").trim();
     const password = String(req.body.password || "");
 
-    if (!["email", "sms"].includes(channel)) {
-      return res.status(400).json({ success: false, error: 'channel must be "email" or "sms"' });
-    }
+    if (!["email", "sms"].includes(channel)) return res.status(400).json({ success: false, error: 'channel must be "email" or "sms"' });
     if (!identifierRaw) return res.status(400).json({ success: false, error: "identifier is required" });
     if (!passwordOk(password)) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
 
@@ -236,12 +301,13 @@ router.post("/login/request-otp", requestOtpLimiter, async (req, res) => {
     if (channel === "email" && !isEmail(identifier)) return res.status(400).json({ success: false, error: "Invalid email" });
     if (channel === "sms" && !isE164(identifier)) return res.status(400).json({ success: false, error: "Phone must be E.164 like +919876543210" });
 
+    // prevent using admin in user OTP flow
+    if (identifier === STATIC_ADMIN_EMAIL_FINAL) {
+      return res.status(403).json({ success: false, error: "Use /api/auth/admin/login for admin." });
+    }
+
     const user = await User.findOne(channel === "email" ? { email: identifier } : { phone: identifier });
     if (!user) return res.status(404).json({ success: false, error: "User not found" });
-
-    if (user.role === "admin") {
-      return res.status(403).json({ success: false, error: "Admin OTP disabled. Use /api/auth/admin/login" });
-    }
 
     const storedHash = getStoredPasswordHash(user);
     if (!storedHash) return res.status(500).json({ success: false, error: "Password hash missing in DB." });
@@ -253,7 +319,7 @@ router.post("/login/request-otp", requestOtpLimiter, async (req, res) => {
     if (alreadyVerified) {
       user.lastLoginAt = new Date();
       await user.save();
-      const token = signToken(user);
+      const token = signToken({ userId: user._id.toString(), role: user.role, email: user.email || null, phone: user.phone || null });
       return res.json({ success: true, otpRequired: false, token, user: { id: user._id, role: user.role, email: user.email } });
     }
 
@@ -275,7 +341,7 @@ router.post("/login/request-otp", requestOtpLimiter, async (req, res) => {
   }
 });
 
-// LOGIN - VERIFY OTP
+// LOGIN - VERIFY OTP (users only)
 router.post("/login/verify-otp", verifyOtpLimiter, async (req, res) => {
   try {
     const channel = String(req.body.channel || "").trim();
@@ -289,10 +355,10 @@ router.post("/login/verify-otp", verifyOtpLimiter, async (req, res) => {
     if (!passwordOk(password)) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
 
     const identifier = channel === "email" ? normalizeEmail(identifierRaw) : normalizePhone(identifierRaw);
+    if (identifier === STATIC_ADMIN_EMAIL_FINAL) return res.status(403).json({ success: false, error: "Use /api/auth/admin/login for admin." });
 
     const user = await User.findOne(channel === "email" ? { email: identifier } : { phone: identifier });
     if (!user) return res.status(404).json({ success: false, error: "User not found" });
-    if (user.role === "admin") return res.status(403).json({ success: false, error: "Admin OTP disabled" });
 
     const storedHash = getStoredPasswordHash(user);
     if (!storedHash) return res.status(500).json({ success: false, error: "Password hash missing in DB." });
@@ -331,7 +397,7 @@ router.post("/login/verify-otp", verifyOtpLimiter, async (req, res) => {
     user.lastLoginAt = new Date();
     await user.save();
 
-    const token = signToken(user);
+    const token = signToken({ userId: user._id.toString(), role: user.role, email: user.email || null, phone: user.phone || null });
     return res.json({ success: true, token, user: { id: user._id, role: user.role, email: user.email } });
   } catch (e) {
     console.error("❌ login/verify-otp:", e?.message || e);
@@ -339,110 +405,16 @@ router.post("/login/verify-otp", verifyOtpLimiter, async (req, res) => {
   }
 });
 
-// PASSWORD LOGIN (no OTP)
-router.post("/login/password", async (req, res) => {
-  try {
-    // allow either { channel, identifier, password } OR legacy { email, password } OR { phone, password }
-    let channel = String(req.body.channel || "").trim();
-    let identifierRaw = String(req.body.identifier || "").trim();
-
-    if (!channel) {
-      if (req.body.email) {
-        channel = "email";
-        identifierRaw = String(req.body.email || "").trim();
-      } else if (req.body.phone) {
-        channel = "sms";
-        identifierRaw = String(req.body.phone || "").trim();
-      }
-    }
-
-    const password = String(req.body.password || "");
-
-    if (!["email", "sms"].includes(channel))
-      return res.status(400).json({ success: false, error: 'Provide channel "email" or "sms", or send `email`/`phone` field' });
-
-    if (!identifierRaw) return res.status(400).json({ success: false, error: "identifier (email or phone) is required" });
-    if (!passwordOk(password)) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
-
-    const identifier = channel === "email" ? normalizeEmail(identifierRaw) : normalizePhone(identifierRaw);
-
-    // For password-based login we are permissive about phone format (don't require strict E.164)
-    const user = await User.findOne(channel === "email" ? { email: identifier } : { phone: identifier });
-    if (!user) return res.status(404).json({ success: false, error: "User not found" });
-    if (user.role === "admin") return res.status(403).json({ success: false, error: "Admin login is /api/auth/admin/login" });
-
-    const storedHash = getStoredPasswordHash(user);
-    if (!storedHash) return res.status(500).json({ success: false, error: "Password hash missing in DB." });
-
-    const ok = await bcrypt.compare(password, storedHash);
-    if (!ok) return res.status(401).json({ success: false, error: "Invalid password" });
-
-    const alreadyVerified = channel === "email" ? !!user.isEmailVerified : !!user.isPhoneVerified;
-    if (!alreadyVerified) return res.status(403).json({ success: false, error: "OTP verification required first." });
-
-    user.lastLoginAt = new Date();
-    await user.save();
-
-    const token = signToken(user);
-    return res.json({ success: true, token, user: { id: user._id, role: user.role, email: user.email } });
-  } catch (e) {
-    console.error("❌ login/password:", e?.message || e);
-    return res.status(500).json({ success: false, error: "Password login failed", detail: e?.message || "" });
-  }
-});
-
-// ADMIN LOGIN (DB)
-router.post("/admin/login", async (req, res) => {
-  try {
-    const email = normalizeEmail(req.body.email);
-    const password = String(req.body.password || "");
-
-    if (!email || !isEmail(email)) return res.status(400).json({ success: false, error: "Valid email required" });
-    if (!passwordOk(password)) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
-
-    const admin = await User.findOne({ email, role: "admin" });
-    if (!admin) return res.status(404).json({ success: false, error: "Admin not found" });
-
-    const storedHash = getStoredPasswordHash(admin);
-    if (!storedHash) return res.status(500).json({ success: false, error: "Admin password hash missing in DB." });
-
-    const ok = await bcrypt.compare(password, storedHash);
-    if (!ok) return res.status(401).json({ success: false, error: "Invalid password" });
-
-    admin.lastLoginAt = new Date();
-    await admin.save();
-
-    const token = signToken(admin);
-    return res.json({ success: true, token, user: { id: admin._id, role: admin.role, email: admin.email } });
-  } catch (e) {
-    console.error("❌ admin/login:", e?.message || e);
-    return res.status(500).json({ success: false, error: "Admin login failed" });
-  }
-});
-
-// STATIC ADMIN LOGIN (GET)
-router.get("/admin/login", async (req, res) => {
-  try {
-    const email = normalizeEmail(req.query.email);
-    const password = String(req.query.password || "");
-
-    if (!email || !isEmail(email)) return res.status(400).json({ success: false, error: "Valid email required" });
-    if (!passwordOk(password)) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
-
-    if (email !== STATIC_ADMIN_EMAIL_FINAL || password !== STATIC_ADMIN_PASSWORD_FINAL) {
-      return res.status(401).json({ success: false, error: "Invalid admin credentials" });
-    }
-
-    const token = jwt.sign({ userId: "admin_static", role: "admin", email }, JWT_SECRET_FINAL, { expiresIn: JWT_EXPIRES_IN });
-    return res.json({ success: true, token, user: { id: "admin_static", role: "admin", email } });
-  } catch (e) {
-    return res.status(500).json({ success: false, error: "Admin login failed", detail: e?.message || "" });
-  }
-});
-
-// ME
+// ME (supports static admin)
 router.get("/me", authMiddleware, async (req, res) => {
   try {
+    if (req.auth.userId === "admin_static" && req.auth.role === "admin") {
+      return res.json({
+        success: true,
+        user: { id: "admin_static", role: "admin", email: STATIC_ADMIN_EMAIL_FINAL, firstName: "Admin", lastName: "User" },
+      });
+    }
+
     const user = await User.findById(req.auth.userId).select(
       "firstName lastName email phone role isEmailVerified isPhoneVerified lastLoginAt createdAt updatedAt"
     );

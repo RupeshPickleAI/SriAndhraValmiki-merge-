@@ -1,4 +1,4 @@
-// server.js (MongoDB + media upload + content APIs + audio local JSON + gallery + notifications + auth + serve Vite dist)
+// server.js
 require("dotenv").config();
 
 const express = require("express");
@@ -8,7 +8,7 @@ const path = require("path");
 const fs = require("fs");
 const mongoose = require("mongoose");
 
-// separate files (your existing route modules)
+// route modules
 const contentRoutes = require("./contentRoutes");
 const galleryRoutes = require("./galleryRoutes");
 const notificationRoutes = require("./notificationRoutes");
@@ -45,8 +45,20 @@ const MONGODB_URI =
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
-// ✅ Serve all uploads (images/videos/banners/audio/pdfs/gallery)
+// ✅ Serve all uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// ✅ Admin-only for ALL write methods
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+function adminForWrites(req, res, next) {
+  if (READ_METHODS.has(req.method)) return next(); // public read
+
+  // allow auth endpoints
+  if (req.originalUrl.startsWith("/api/auth")) return next();
+
+  // enforce admin for all writes
+  return auth.authMiddleware(req, res, () => auth.requireAdmin(req, res, next));
+}
 
 // ---- FOLDERS ----
 const IMAGE_UPLOAD_PATH = path.join(__dirname, "uploads", "images");
@@ -74,8 +86,6 @@ mongoose
   .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
 // ---- MONGOOSE MODELS ----
-
-// Media model (images / videos / banners) (audio is local JSON)
 const mediaSchema = new mongoose.Schema(
   {
     type: { type: String, enum: ["image", "video", "banner"], required: true },
@@ -87,19 +97,9 @@ const mediaSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-const Media = mongoose.model("Media", mediaSchema);
+const Media = mongoose.models.Media || mongoose.model("Media", mediaSchema);
 
-// YouTube videos model (Mongo)
-const videoSchema = new mongoose.Schema(
-  {
-    title: { type: String, required: true },
-    youtubeUrl: { type: String, required: true },
-  },
-  { timestamps: true }
-);
-const Video = mongoose.model("Video", videoSchema);
-
-// ---- AUDIO "LOCAL STORAGE" (JSON FILE) ----
+// ---- AUDIO LOCAL JSON ----
 const AUDIO_DB_PATH = path.join(__dirname, "audio-db.json");
 
 function readAudioDb() {
@@ -190,10 +190,10 @@ const uploadAudio = multer({
 }).single("audio");
 
 // ---- BASIC HEALTH ----
-app.get("/", (_req, res) => {
-  return res.redirect("/login");
-});
+app.get("/", (_req, res) => res.redirect("/login"));
 
+// ✅ AUTH first
+app.use("/api/auth", auth.router);
 
 // ---------------- HOME SETTINGS APIs ----------------
 app.get("/api/settings/home", (_req, res) => {
@@ -201,19 +201,18 @@ app.get("/api/settings/home", (_req, res) => {
   res.json({ success: true, data: s });
 });
 
-app.put("/api/settings/home", (req, res) => {
+app.put("/api/settings/home", adminForWrites, (req, res) => {
   const current = readHomeSettings();
   const next = { ...current, ...req.body, updatedAt: new Date().toISOString() };
   writeHomeSettings(next);
   res.json({ success: true, data: next });
 });
 
-// ---------------- IMAGE UPLOAD ----------------
-async function handleImageUpload(req, res) {
+// ---------------- IMAGE UPLOAD (ADMIN ONLY) ----------------
+function handleImageUpload(req, res) {
   uploadImage(req, res, async (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
-    if (!req.file)
-      return res.status(400).json({ success: false, error: "No image file uploaded" });
+    if (!req.file) return res.status(400).json({ success: false, error: "No image file uploaded" });
 
     const fileUrl = `${req.protocol}://${req.get("host")}/uploads/images/${req.file.filename}`;
 
@@ -234,11 +233,11 @@ async function handleImageUpload(req, res) {
   });
 }
 
-app.post("/api/upload/image", handleImageUpload);
-app.post("/upload/image", handleImageUpload); // legacy alias
+app.post("/api/upload/image", adminForWrites, handleImageUpload);
+app.post("/upload/image", adminForWrites, handleImageUpload);
 
-// ---------------- VIDEO FILE UPLOAD ----------------
-app.post("/api/upload/video", (req, res) => {
+// ---------------- VIDEO FILE UPLOAD (ADMIN ONLY) ----------------
+app.post("/api/upload/video", adminForWrites, (req, res) => {
   uploadVideo(req, res, async (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No video file uploaded" });
@@ -254,6 +253,7 @@ app.post("/api/upload/video", (req, res) => {
         size: req.file.size,
         mimeType: req.file.mimetype,
       });
+
       res.json({ success: true, message: "Video file uploaded & saved to DB", data: mediaDoc });
     } catch {
       res.status(500).json({ success: false, error: "Video uploaded but failed to save in DB" });
@@ -261,8 +261,8 @@ app.post("/api/upload/video", (req, res) => {
   });
 });
 
-// ---------------- BANNER IMAGE UPLOAD ----------------
-app.post("/api/upload/banner", (req, res) => {
+// ---------------- BANNER IMAGE UPLOAD (ADMIN ONLY) ----------------
+app.post("/api/upload/banner", adminForWrites, (req, res) => {
   uploadBanner(req, res, async (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No banner file uploaded" });
@@ -295,8 +295,8 @@ app.post("/api/upload/banner", (req, res) => {
   });
 });
 
-// ---------------- AUDIO UPLOAD + CRUD (LOCAL JSON) ----------------
-app.post("/api/upload/audio", (req, res) => {
+// ---------------- AUDIO UPLOAD (ADMIN WRITE, PUBLIC READ) ----------------
+app.post("/api/upload/audio", adminForWrites, (req, res) => {
   uploadAudio(req, res, (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No audio file uploaded" });
@@ -328,18 +328,12 @@ app.get("/api/audio", (_req, res) => {
   }
 });
 
-// ---------------- MOUNT YOUR OTHER ROUTES ----------------
-app.use("/api", contentRoutes);
-app.use("/api/gallery", galleryRoutes);
-app.use("/api/notifications", notificationRoutes);
-app.use("/api/videos", videosRoutes);
-app.use("/api/auth", auth.router);      
-
-// return a default audio (first item) for frontend convenience
 app.get("/api/audio/default", (_req, res) => {
   try {
     const list = readAudioDb();
-    if (!Array.isArray(list) || list.length === 0) return res.status(404).json({ success: false, error: "No audio available" });
+    if (!Array.isArray(list) || list.length === 0) {
+      return res.status(404).json({ success: false, error: "No audio available" });
+    }
     return res.json({ success: true, data: list[0] });
   } catch (e) {
     console.error("Error fetching default audio:", e);
@@ -347,20 +341,25 @@ app.get("/api/audio/default", (_req, res) => {
   }
 });
 
+// ---------------- ROUTES (ADMIN WRITE / PUBLIC READ) ----------------
+// ✅ ROUTES (ADMIN WRITE / PUBLIC READ)
+app.use("/api/videos", adminForWrites, videosRoutes);     // ✅ keep this FIRST
+app.use("/api/gallery", adminForWrites, galleryRoutes);
+app.use("/api/notifications", adminForWrites, notificationRoutes);
+app.use("/api", adminForWrites, contentRoutes);           // ✅ keep this LAST
+
+
+
 // ---------------- FRONTEND (Vite dist) ----------------
 const FRONTEND_DIST = path.join(__dirname, "frontend", "dist");
 
 if (fs.existsSync(FRONTEND_DIST)) {
   app.use(express.static(FRONTEND_DIST));
-
-  // ✅ SPA fallback only for NON api/uploads routes (Node 22 safe)
   app.get(/^(?!\/api|\/uploads).*/, (req, res) => {
     res.sendFile(path.join(FRONTEND_DIST, "index.html"));
   });
 } else {
   console.warn("⚠️ Frontend dist not found at:", FRONTEND_DIST);
-
-  // If dist not found, do NOT try to send index.html
   app.get("*", (req, res) => {
     res.status(404).json({ success: false, error: "Frontend build not found. Run frontend build." });
   });

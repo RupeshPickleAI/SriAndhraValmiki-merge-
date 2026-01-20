@@ -44,13 +44,12 @@ const galleryImageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-const GalleryFolder = mongoose.model("GalleryFolder", galleryFolderSchema);
-const GalleryImage = mongoose.model("GalleryImage", galleryImageSchema);
+const GalleryFolder = mongoose.models.GalleryFolder || mongoose.model("GalleryFolder", galleryFolderSchema);
+const GalleryImage = mongoose.models.GalleryImage || mongoose.model("GalleryImage", galleryImageSchema);
 
 /* ------------------ Multer Storage ------------------ */
 const galleryStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    // Create folderId ahead for create-folder flow
     const folderId = req.galleryFolderId || req.params.folderId || "misc";
     const dest = path.join(__dirname, "uploads", "gallery", String(folderId));
     ensureDir(dest);
@@ -78,11 +77,10 @@ const uploadMultipleImages = multer({
 
 /* ------------------ FOLDERS CRUD ------------------ */
 
-// ✅ Create folder (album) + optional thumbnail (multipart)
 router.post(
   "/folders",
   (req, _res, next) => {
-    req.galleryFolderId = new mongoose.Types.ObjectId(); // pre-generate id
+    req.galleryFolderId = new mongoose.Types.ObjectId();
     next();
   },
   (req, res) => {
@@ -116,12 +114,10 @@ router.post(
   }
 );
 
-// ✅ List folders (albums) + imageCount
 router.get("/folders", async (_req, res) => {
   try {
     const folders = await GalleryFolder.find().sort({ createdAt: -1 }).lean();
 
-    // compute count per folder
     const counts = await GalleryImage.aggregate([
       { $group: { _id: "$folderId", count: { $sum: 1 } } },
     ]);
@@ -140,12 +136,10 @@ router.get("/folders", async (_req, res) => {
   }
 });
 
-// ✅ Get single folder details
 router.get("/folders/:folderId", async (req, res) => {
   try {
     const folder = await GalleryFolder.findById(req.params.folderId);
     if (!folder) return res.status(404).json({ success: false, error: "Folder not found" });
-
     return res.json({ success: true, data: folder });
   } catch (e) {
     console.error(e);
@@ -153,7 +147,6 @@ router.get("/folders/:folderId", async (req, res) => {
   }
 });
 
-// ✅ Update folder (title/description) (JSON)
 router.put("/folders/:folderId", async (req, res) => {
   try {
     const { title, description } = req.body;
@@ -176,7 +169,6 @@ router.put("/folders/:folderId", async (req, res) => {
   }
 });
 
-// ✅ Replace / set thumbnail (multipart)
 router.post("/folders/:folderId/thumbnail", (req, res) => {
   uploadSingleThumb(req, res, async (err) => {
     try {
@@ -186,12 +178,7 @@ router.post("/folders/:folderId/thumbnail", (req, res) => {
       const folderId = req.params.folderId;
       const url = `${req.protocol}://${req.get("host")}/uploads/gallery/${folderId}/${req.file.filename}`;
 
-      const updated = await GalleryFolder.findByIdAndUpdate(
-        folderId,
-        { thumbnailUrl: url },
-        { new: true }
-      );
-
+      const updated = await GalleryFolder.findByIdAndUpdate(folderId, { thumbnailUrl: url }, { new: true });
       if (!updated) return res.status(404).json({ success: false, error: "Folder not found" });
 
       return res.json({ success: true, message: "Thumbnail updated", data: updated });
@@ -202,7 +189,6 @@ router.post("/folders/:folderId/thumbnail", (req, res) => {
   });
 });
 
-// ✅ Delete folder + all images + delete folder directory
 router.delete("/folders/:folderId", async (req, res) => {
   try {
     const folderId = req.params.folderId;
@@ -213,7 +199,6 @@ router.delete("/folders/:folderId", async (req, res) => {
     await GalleryImage.deleteMany({ folderId });
     await GalleryFolder.deleteOne({ _id: folderId });
 
-    // remove directory from disk
     const dir = path.join(__dirname, "uploads", "gallery", String(folderId));
     if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 
@@ -226,7 +211,6 @@ router.delete("/folders/:folderId", async (req, res) => {
 
 /* ------------------ IMAGES CRUD ------------------ */
 
-// ✅ Add multiple images to a folder (multipart)
 router.post("/folders/:folderId/images", (req, res) => {
   uploadMultipleImages(req, res, async (err) => {
     try {
@@ -244,7 +228,7 @@ router.post("/folders/:folderId/images", (req, res) => {
         req.files.map((f) => ({
           folderId,
           url: `${req.protocol}://${req.get("host")}/uploads/gallery/${folderId}/${f.filename}`,
-          caption: (req.body.caption || "").trim(), // optional same caption for batch
+          caption: (req.body.caption || "").trim(),
           originalName: f.originalname,
           fileName: f.filename,
           size: f.size,
@@ -260,7 +244,6 @@ router.post("/folders/:folderId/images", (req, res) => {
   });
 });
 
-// ✅ List images in a folder
 router.get("/folders/:folderId/images", async (req, res) => {
   try {
     const list = await GalleryImage.find({ folderId: req.params.folderId }).sort({ createdAt: -1 });
@@ -271,15 +254,10 @@ router.get("/folders/:folderId/images", async (req, res) => {
   }
 });
 
-// ✅ Update single image caption
 router.put("/images/:imageId", async (req, res) => {
   try {
     const caption = (req.body.caption || "").trim();
-    const updated = await GalleryImage.findByIdAndUpdate(
-      req.params.imageId,
-      { caption },
-      { new: true }
-    );
+    const updated = await GalleryImage.findByIdAndUpdate(req.params.imageId, { caption }, { new: true });
     if (!updated) return res.status(404).json({ success: false, error: "Image not found" });
 
     return res.json({ success: true, message: "Image updated", data: updated });
@@ -289,7 +267,6 @@ router.put("/images/:imageId", async (req, res) => {
   }
 });
 
-// ✅ Delete image + remove file from disk
 router.delete("/images/:imageId", async (req, res) => {
   try {
     const img = await GalleryImage.findById(req.params.imageId);
