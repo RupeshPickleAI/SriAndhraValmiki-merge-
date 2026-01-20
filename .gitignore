@@ -1,16 +1,18 @@
-node_modules/.env
 # ---- OS junk ----
 .DS_Store
 __MACOSX/
 **/__MACOSX/
+._*
 
 # ---- env files ----
 .env
+.env.local
 **/.env
 
 # ---- node ----
 node_modules/
 **/node_modules/
+package-lock.json
 
 # ---- logs ----
 npm-debug.log*
@@ -18,11 +20,19 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# ---- build outputs (optional) ----
-dist/
-build/
-# **/dist/
-# **/build/
+# ---- IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# ---- uploads (optional: choose based on your need) ----
-media-upload-api/uploads/
+# ---- uploads (don't track user uploads) ----
+uploads/audio/
+uploads/videos/
+uploads/images/
+uploads/banners/
+uploads/pdfs/
+uploads/gallery/
+
+# ---- temp files ----
+*.tmp
