@@ -7,8 +7,8 @@ const userSchema = new mongoose.Schema(
     lastName: { type: String, trim: true, default: "" },
 
     // keep fields optional, but unique only when they are real strings (via partial indexes below)
-    email: { type: String, trim: true, lowercase: true, index: true },
-    phone: { type: String, trim: true, index: true }, // E.164
+    email: { type: String, trim: true, lowercase: true },
+    phone: { type: String, trim: true }, // E.164
 
     passwordHash: { type: String, required: true },
 

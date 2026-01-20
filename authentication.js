@@ -250,6 +250,7 @@ router.post("/signup", async (req, res) => {
     const phoneRaw = normalizePhone(req.body.phone);
     const phone = phoneRaw ? phoneRaw : undefined;
     const password = String(req.body.password || "");
+    console.log("Signup request for email:", req.body.email);
 
     if (!firstName) return res.status(400).json({ success: false, error: "First name is required" });
     if (!lastName) return res.status(400).json({ success: false, error: "Last name is required" });
@@ -274,6 +275,7 @@ router.post("/signup", async (req, res) => {
       isEmailVerified: false,
       isPhoneVerified: false,
     });
+    console.log("User created with ID:", user._id);
 
     return res.json({
       success: true,
@@ -281,7 +283,8 @@ router.post("/signup", async (req, res) => {
       user: { id: user._id, firstName, lastName, email: user.email, phone: user.phone || null, role: user.role },
     });
   } catch (e) {
-    console.error("❌ signup:", e?.message || e);
+    console.error("❌ signup error:", e?.message || e);
+    console.error("Full error:", e);
     return res.status(500).json({ success: false, error: "Signup failed" });
   }
 });

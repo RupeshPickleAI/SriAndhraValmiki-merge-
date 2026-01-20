@@ -38,13 +38,34 @@ function writeHomeSettings(next) {
 
 // ---- CONFIG ----
 const PORT = process.env.PORT || 5000;
-// const MONGODB_URI =
-//   process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/media_upload_db";
 const dbUrl = process.env.MONGODB_URI_GLOBAL;
+
+// Get the actual root directory (handle both root and nested execution)
+const ROOT_DIR = __dirname.endsWith("media-upload-api") 
+  ? path.dirname(__dirname) 
+  : __dirname;
+const FRONTEND_DIST = path.join(ROOT_DIR, "frontend", "dist");
 
 // ---- MIDDLEWARE ----
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
+
+// 📋 REQUEST LOGGER - Log all incoming requests
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`\n📥 [${timestamp}] ${req.method} ${req.path}`);
+  console.log(`   Body:`, req.body);
+  console.log(`   Headers:`, { authorization: req.headers.authorization ? "***" : "none" });
+  
+  // Log response
+  const originalJson = res.json;
+  res.json = function(data) {
+    console.log(`   ✅ Response (${res.statusCode}):`, data);
+    return originalJson.call(this, data);
+  };
+  
+  next();
+});
 
 // ✅ Serve all uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -62,12 +83,12 @@ function adminForWrites(req, res, next) {
 }
 
 // ---- FOLDERS ----
-const IMAGE_UPLOAD_PATH = path.join(__dirname, "uploads", "images");
-const VIDEO_UPLOAD_PATH = path.join(__dirname, "uploads", "videos");
-const BANNER_UPLOAD_PATH = path.join(__dirname, "uploads", "banners");
-const AUDIO_UPLOAD_PATH = path.join(__dirname, "uploads", "audio");
-const PDF_UPLOAD_PATH = path.join(__dirname, "uploads", "pdfs");
-const GALLERY_UPLOAD_PATH = path.join(__dirname, "uploads", "gallery");
+const IMAGE_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "images");
+const VIDEO_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "videos");
+const BANNER_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "banners");
+const AUDIO_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "audio");
+const PDF_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "pdfs");
+const GALLERY_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "gallery");
 
 [
   IMAGE_UPLOAD_PATH,
@@ -352,24 +373,31 @@ app.use("/api", adminForWrites, contentRoutes);           // ✅ keep this LAST
 
 
 // ---------------- FRONTEND (Vite dist) ----------------
-const FRONTEND_DIST = path.join(__dirname, "frontend", "dist");
-console.log("Frontend dist path:", FRONTEND_DIST);
+console.log("📁 Looking for frontend dist at:", FRONTEND_DIST);
 
 if (fs.existsSync(FRONTEND_DIST)) {
+  console.log("✅ Frontend dist found! Serving static files...");
   app.use(express.static(FRONTEND_DIST));
   app.get(/^(?!\/api|\/uploads).*/, (req, res) => {
     res.sendFile(path.join(FRONTEND_DIST, "index.html"));
   });
 } else {
   console.warn("⚠️ Frontend dist not found at:", FRONTEND_DIST);
+  console.warn("Make sure to build the frontend: cd frontend && npm run build");
   app.get("*", (req, res) => {
-    res.status(404).json({ success: false, error: "Frontend build not found. Run frontend build." });
+    res.status(404).json({ 
+      success: false, 
+      error: "Frontend build not found. Run: cd frontend && npm run build" 
+    });
   });
 }
 
 // ---------------- ERROR HANDLER ----------------
-app.use((err, _req, res, _next) => {
-  console.error("❌ Server error:", err);
+app.use((err, req, res, _next) => {
+  console.error("\n❌ ERROR Handler triggered");
+  console.error(`   Route: ${req.method} ${req.path}`);
+  console.error(`   Message: ${err.message}`);
+  console.error(`   Stack:`, err.stack);
   res.status(500).json({ success: false, error: err.message || "Server error" });
 });
 

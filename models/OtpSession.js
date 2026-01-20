@@ -4,11 +4,11 @@ const mongoose = require("mongoose");
 const otpSchema = new mongoose.Schema(
   {
     channel: { type: String, enum: ["email", "sms"], required: true },
-    identifier: { type: String, required: true, index: true }, // normalized email or phone
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    identifier: { type: String, required: true }, // normalized email or phone
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
 
     otpHash: { type: String, required: true },
-    expiresAt: { type: Date, required: true, index: true },
+    expiresAt: { type: Date, required: true },
 
     attempts: { type: Number, default: 0 },
     maxAttempts: { type: Number, default: 5 },
