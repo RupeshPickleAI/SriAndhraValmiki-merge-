@@ -21,8 +21,8 @@ pnpm-debug.log*
 # ---- build outputs (optional) ----
 dist/
 build/
-**/dist/
-**/build/
+# **/dist/
+# **/build/
 
 # ---- uploads (optional: choose based on your need) ----
 media-upload-api/uploads/

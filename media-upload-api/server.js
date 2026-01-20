@@ -38,8 +38,9 @@ function writeHomeSettings(next) {
 
 // ---- CONFIG ----
 const PORT = process.env.PORT || 5000;
-const MONGODB_URI =
-  process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/media_upload_db";
+// const MONGODB_URI =
+//   process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/media_upload_db";
+const dbUrl = process.env.MONGODB_URI_GLOBAL;
 
 // ---- MIDDLEWARE ----
 app.use(cors());
@@ -81,8 +82,8 @@ const GALLERY_UPLOAD_PATH = path.join(__dirname, "uploads", "gallery");
 
 // ---- MONGOOSE SETUP ----
 mongoose
-  .connect(MONGODB_URI)
-  .then(() => console.log("✅ Connected to MongoDB at", MONGODB_URI))
+  .connect(dbUrl)
+  .then(() => console.log("✅ Connected to MongoDB at", dbUrl))
   .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 
 // ---- MONGOOSE MODELS ----
@@ -352,6 +353,7 @@ app.use("/api", adminForWrites, contentRoutes);           // ✅ keep this LAST
 
 // ---------------- FRONTEND (Vite dist) ----------------
 const FRONTEND_DIST = path.join(__dirname, "frontend", "dist");
+console.log("Frontend dist path:", FRONTEND_DIST);
 
 if (fs.existsSync(FRONTEND_DIST)) {
   app.use(express.static(FRONTEND_DIST));
