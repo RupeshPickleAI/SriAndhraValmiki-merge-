@@ -1,0 +1,15 @@
+node_modules
+.git
+.env
+.env.local
+.DS_Store
+__MACOSX
+frontend/node_modules
+frontend/.env
+frontend/dist
+.gitignore
+README.md
+*.log
+*.pid
+*.seed
+*.pid.lock
