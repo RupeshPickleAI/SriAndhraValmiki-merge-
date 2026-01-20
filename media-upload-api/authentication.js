@@ -12,7 +12,7 @@ const OtpSession = require("./models/OtpSession");
 
 const router = express.Router();
 
-// -------------------- ENV --------------------
+// -------------------- ENV --------------------///
 const {
   JWT_SECRET,
   JWT_EXPIRES_IN = "7d",
