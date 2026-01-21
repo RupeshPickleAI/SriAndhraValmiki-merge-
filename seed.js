@@ -4,12 +4,12 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const User = require("./models/User");
 
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/media_upload_db";
+const MONGODB_URI_GLOBAL = process.env.MONGODB_URI_GLOBAL || "mongodb+srv://rupesh:rupesh@rupesh.peoycon.mongodb.net/valmiki?retryWrites=true&w=majority";
 
 async function seedDatabase() {
   try {
     // Connect to MongoDB
-    await mongoose.connect(MONGODB_URI);
+    await mongoose.connect(MONGODB_URI_GLOBAL);
     console.log("✅ Connected to MongoDB");
 
     // Delete existing test users

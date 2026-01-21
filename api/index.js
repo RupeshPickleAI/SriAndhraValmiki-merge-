@@ -84,10 +84,10 @@ let mongooseConnected = false;
 
 if (!mongooseConnected) {
   mongoose
-    .connect(MONGODB_URI)
+    .connect(MONGODB_URI_GLOBAL)
     .then(() => {
       mongooseConnected = true;
-      console.log("✅ Connected to MongoDB at", MONGODB_URI);
+      console.log("✅ Connected to MongoDB at", MONGODB_URI_GLOBAL);
     })
     .catch((err) => console.error("❌ MongoDB connection error:", err.message));
 }
