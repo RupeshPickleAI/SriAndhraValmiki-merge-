@@ -17,6 +17,9 @@ const auth = require("./authentication");
 
 const app = express();
 
+// ✅ IMPORTANT on Render (behind proxy) so req.protocol becomes https
+app.set("trust proxy", 1);
+
 // ---------------- SETTINGS STORE (home poster + marquee) ----------------
 const SETTINGS_FILE = path.join(__dirname, "data", "homeSettings.json");
 const SETTINGS_DIR = path.dirname(SETTINGS_FILE);
@@ -38,16 +41,32 @@ function writeHomeSettings(next) {
 
 // ---- CONFIG ----
 const PORT = process.env.PORT || 5000;
-const dbUrl = process.env.MONGODB_URI_GLOBAL;
+
+// ✅ MUST be set in Render Environment
+const dbUrl =
+  process.env.MONGODB_URI_GLOBAL ||
+  process.env.MONGODB_URI ||
+  process.env.MONGO_URL ||
+  "";
 
 // Get the actual root directory (handle both root and nested execution)
-const ROOT_DIR = __dirname.endsWith("media-upload-api") 
-  ? path.dirname(__dirname) 
+const ROOT_DIR = __dirname.endsWith("media-upload-api")
+  ? path.dirname(__dirname)
   : __dirname;
+
 const FRONTEND_DIST = path.join(ROOT_DIR, "frontend", "dist");
 
+// ✅ Keep one uploads root (use ROOT_DIR so it matches your previous structure)
+const UPLOADS_ROOT = path.join(ROOT_DIR, "uploads");
+
 // ---- MIDDLEWARE ----
-app.use(cors());
+app.use(
+  cors({
+    origin: true, // allows same-origin + external if needed
+    credentials: true,
+  })
+);
+
 app.use(express.json({ limit: "20mb" }));
 
 // 📋 REQUEST LOGGER - Log all incoming requests
@@ -56,39 +75,26 @@ app.use((req, res, next) => {
   console.log(`\n📥 [${timestamp}] ${req.method} ${req.path}`);
   console.log(`   Body:`, req.body);
   console.log(`   Headers:`, { authorization: req.headers.authorization ? "***" : "none" });
-  
-  // Log response
+
   const originalJson = res.json;
-  res.json = function(data) {
+  res.json = function (data) {
     console.log(`   ✅ Response (${res.statusCode}):`, data);
     return originalJson.call(this, data);
   };
-  
+
   next();
 });
 
-// ✅ Serve all uploads
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-
-// ✅ Admin-only for ALL write methods
-const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
-function adminForWrites(req, res, next) {
-  if (READ_METHODS.has(req.method)) return next(); // public read
-
-  // allow auth endpoints
-  if (req.originalUrl.startsWith("/api/auth")) return next();
-
-  // enforce admin for all writes
-  return auth.authMiddleware(req, res, () => auth.requireAdmin(req, res, next));
-}
+// ✅ Serve all uploads (MUST match where multer saves files)
+app.use("/uploads", express.static(UPLOADS_ROOT));
 
 // ---- FOLDERS ----
-const IMAGE_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "images");
-const VIDEO_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "videos");
-const BANNER_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "banners");
-const AUDIO_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "audio");
-const PDF_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "pdfs");
-const GALLERY_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "gallery");
+const IMAGE_UPLOAD_PATH = path.join(UPLOADS_ROOT, "images");
+const VIDEO_UPLOAD_PATH = path.join(UPLOADS_ROOT, "videos");
+const BANNER_UPLOAD_PATH = path.join(UPLOADS_ROOT, "banners");
+const AUDIO_UPLOAD_PATH = path.join(UPLOADS_ROOT, "audio");
+const PDF_UPLOAD_PATH = path.join(UPLOADS_ROOT, "pdfs");
+const GALLERY_UPLOAD_PATH = path.join(UPLOADS_ROOT, "gallery");
 
 [
   IMAGE_UPLOAD_PATH,
@@ -101,11 +107,33 @@ const GALLERY_UPLOAD_PATH = path.join(ROOT_DIR, "uploads", "gallery");
   if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
 });
 
+// ---- DB READY FLAG ----
+let DB_READY = false;
+
+function requireDb(req, res, next) {
+  if (DB_READY) return next();
+  return res.status(503).json({
+    success: false,
+    error: "Database not connected. Check MongoDB Atlas URI / IP whitelist.",
+  });
+}
+
 // ---- MONGOOSE SETUP ----
-mongoose
-  .connect(dbUrl)
-  .then(() => console.log("✅ Connected to MongoDB at", dbUrl))
-  .catch((err) => console.error("❌ MongoDB connection error:", err.message));
+mongoose.set("strictQuery", true);
+
+// Helpful connection logs
+mongoose.connection.on("connected", () => {
+  DB_READY = true;
+  console.log("✅ MongoDB connected");
+});
+mongoose.connection.on("disconnected", () => {
+  DB_READY = false;
+  console.log("⚠️ MongoDB disconnected");
+});
+mongoose.connection.on("error", (err) => {
+  DB_READY = false;
+  console.error("❌ MongoDB error:", err.message);
+});
 
 // ---- MONGOOSE MODELS ----
 const mediaSchema = new mongoose.Schema(
@@ -153,36 +181,34 @@ function makeSafeFileName(originalName) {
 }
 
 const imageStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    fs.mkdir(IMAGE_UPLOAD_PATH, { recursive: true }, (err) => cb(err, IMAGE_UPLOAD_PATH));
-  },
-  filename: (_, file, cb) => cb(null, makeSafeFileName(file.originalname)),
+  destination: (_req, _file, cb) => cb(null, IMAGE_UPLOAD_PATH),
+  filename: (_req, file, cb) => cb(null, makeSafeFileName(file.originalname)),
 });
 
 const videoStorage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, VIDEO_UPLOAD_PATH),
-  filename: (_, file, cb) => cb(null, makeSafeFileName(file.originalname)),
+  destination: (_req, _file, cb) => cb(null, VIDEO_UPLOAD_PATH),
+  filename: (_req, file, cb) => cb(null, makeSafeFileName(file.originalname)),
 });
 
 const bannerStorage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, BANNER_UPLOAD_PATH),
-  filename: (_, file, cb) => cb(null, makeSafeFileName(file.originalname)),
+  destination: (_req, _file, cb) => cb(null, BANNER_UPLOAD_PATH),
+  filename: (_req, file, cb) => cb(null, makeSafeFileName(file.originalname)),
 });
 
 const audioStorage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, AUDIO_UPLOAD_PATH),
-  filename: (_, file, cb) => cb(null, makeSafeFileName(file.originalname)),
+  destination: (_req, _file, cb) => cb(null, AUDIO_UPLOAD_PATH),
+  filename: (_req, file, cb) => cb(null, makeSafeFileName(file.originalname)),
 });
 
-function imageFileFilter(_, file, cb) {
+function imageFileFilter(_req, file, cb) {
   if (file.mimetype.startsWith("image/")) cb(null, true);
   else cb(new Error("Only image files are allowed!"), false);
 }
-function videoFileFilter(_, file, cb) {
+function videoFileFilter(_req, file, cb) {
   if (file.mimetype.startsWith("video/")) cb(null, true);
   else cb(new Error("Only video files are allowed!"), false);
 }
-function audioFileFilter(_, file, cb) {
+function audioFileFilter(_req, file, cb) {
   if (file.mimetype.startsWith("audio/")) cb(null, true);
   else cb(new Error("Only audio files are allowed!"), false);
 }
@@ -212,12 +238,32 @@ const uploadAudio = multer({
 }).single("audio");
 
 // ---- BASIC HEALTH ----
+app.get("/api/health", (_req, res) => {
+  res.json({
+    success: true,
+    dbReady: DB_READY,
+    mongooseState: mongoose.connection.readyState, // 1 = connected
+  });
+});
+
 app.get("/", (_req, res) => res.redirect("/login"));
 
-// ✅ AUTH first
-app.use("/api/auth", auth.router);
+// ✅ Admin-only for ALL write methods
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+function adminForWrites(req, res, next) {
+  if (READ_METHODS.has(req.method)) return next(); // public read
 
-// ---------------- HOME SETTINGS APIs ----------------
+  // allow auth endpoints
+  if (req.originalUrl.startsWith("/api/auth")) return next();
+
+  // enforce admin for all writes
+  return auth.authMiddleware(req, res, () => auth.requireAdmin(req, res, next));
+}
+
+// ✅ AUTH first (needs DB for most endpoints)
+app.use("/api/auth", requireDb, auth.router);
+
+// ---------------- HOME SETTINGS APIs (file based, no DB needed) ----------------
 app.get("/api/settings/home", (_req, res) => {
   const s = readHomeSettings();
   res.json({ success: true, data: s });
@@ -230,13 +276,26 @@ app.put("/api/settings/home", adminForWrites, (req, res) => {
   res.json({ success: true, data: next });
 });
 
-// ---------------- IMAGE UPLOAD (ADMIN ONLY) ----------------
+// ---------------- IMAGE UPLOAD (ADMIN ONLY + DB REQUIRED) ----------------
+function buildFileUrl(req, relativePath) {
+  // trust proxy makes req.protocol correct on Render (https)
+  return `${req.protocol}://${req.get("host")}${relativePath}`;
+}
+
 function handleImageUpload(req, res) {
+  if (!DB_READY) {
+    return res.status(503).json({
+      success: false,
+      error: "Database not connected. Cannot save image metadata.",
+    });
+  }
+
   uploadImage(req, res, async (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No image file uploaded" });
 
-    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/images/${req.file.filename}`;
+    const relative = `/uploads/images/${req.file.filename}`;
+    const fileUrl = buildFileUrl(req, relative);
 
     try {
       const mediaDoc = await Media.create({
@@ -249,7 +308,8 @@ function handleImageUpload(req, res) {
       });
 
       res.json({ success: true, message: "Image uploaded & saved to DB", data: mediaDoc });
-    } catch {
+    } catch (e) {
+      console.error("❌ Media.create(image) failed:", e?.message || e);
       res.status(500).json({ success: false, error: "Image uploaded but failed to save in DB" });
     }
   });
@@ -258,13 +318,21 @@ function handleImageUpload(req, res) {
 app.post("/api/upload/image", adminForWrites, handleImageUpload);
 app.post("/upload/image", adminForWrites, handleImageUpload);
 
-// ---------------- VIDEO FILE UPLOAD (ADMIN ONLY) ----------------
+// ---------------- VIDEO FILE UPLOAD (ADMIN ONLY + DB REQUIRED) ----------------
 app.post("/api/upload/video", adminForWrites, (req, res) => {
+  if (!DB_READY) {
+    return res.status(503).json({
+      success: false,
+      error: "Database not connected. Cannot save video metadata.",
+    });
+  }
+
   uploadVideo(req, res, async (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No video file uploaded" });
 
-    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/videos/${req.file.filename}`;
+    const relative = `/uploads/videos/${req.file.filename}`;
+    const fileUrl = buildFileUrl(req, relative);
 
     try {
       const mediaDoc = await Media.create({
@@ -277,19 +345,28 @@ app.post("/api/upload/video", adminForWrites, (req, res) => {
       });
 
       res.json({ success: true, message: "Video file uploaded & saved to DB", data: mediaDoc });
-    } catch {
+    } catch (e) {
+      console.error("❌ Media.create(video) failed:", e?.message || e);
       res.status(500).json({ success: false, error: "Video uploaded but failed to save in DB" });
     }
   });
 });
 
-// ---------------- BANNER IMAGE UPLOAD (ADMIN ONLY) ----------------
+// ---------------- BANNER IMAGE UPLOAD (ADMIN ONLY + DB REQUIRED) ----------------
 app.post("/api/upload/banner", adminForWrites, (req, res) => {
+  if (!DB_READY) {
+    return res.status(503).json({
+      success: false,
+      error: "Database not connected. Cannot save banner metadata.",
+    });
+  }
+
   uploadBanner(req, res, async (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No banner file uploaded" });
 
-    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/banners/${req.file.filename}`;
+    const relative = `/uploads/banners/${req.file.filename}`;
+    const fileUrl = buildFileUrl(req, relative);
 
     try {
       const mediaDoc = await Media.create({
@@ -311,7 +388,8 @@ app.post("/api/upload/banner", adminForWrites, (req, res) => {
         data: mediaDoc,
         posterUrl: fileUrl,
       });
-    } catch {
+    } catch (e) {
+      console.error("❌ Media.create(banner) failed:", e?.message || e);
       res.status(500).json({ success: false, error: "Banner uploaded but failed to save in DB" });
     }
   });
@@ -323,7 +401,8 @@ app.post("/api/upload/audio", adminForWrites, (req, res) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No audio file uploaded" });
 
-    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/audio/${req.file.filename}`;
+    const relative = `/uploads/audio/${req.file.filename}`;
+    const fileUrl = buildFileUrl(req, relative);
 
     const list = readAudioDb();
     const audioItem = {
@@ -364,13 +443,11 @@ app.get("/api/audio/default", (_req, res) => {
 });
 
 // ---------------- ROUTES (ADMIN WRITE / PUBLIC READ) ----------------
-// ✅ ROUTES (ADMIN WRITE / PUBLIC READ)
-app.use("/api/videos", adminForWrites, videosRoutes);     // ✅ keep this FIRST
-app.use("/api/gallery", adminForWrites, galleryRoutes);
-app.use("/api/notifications", adminForWrites, notificationRoutes);
-app.use("/api", adminForWrites, contentRoutes);           // ✅ keep this LAST
-
-
+// ✅ These use MongoDB -> protect with requireDb
+app.use("/api/videos", requireDb, adminForWrites, videosRoutes);
+app.use("/api/gallery", requireDb, adminForWrites, galleryRoutes);
+app.use("/api/notifications", requireDb, adminForWrites, notificationRoutes);
+app.use("/api", requireDb, adminForWrites, contentRoutes);
 
 // ---------------- FRONTEND (Vite dist) ----------------
 console.log("📁 Looking for frontend dist at:", FRONTEND_DIST);
@@ -378,16 +455,16 @@ console.log("📁 Looking for frontend dist at:", FRONTEND_DIST);
 if (fs.existsSync(FRONTEND_DIST)) {
   console.log("✅ Frontend dist found! Serving static files...");
   app.use(express.static(FRONTEND_DIST));
-  app.get(/^(?!\/api|\/uploads).*/, (req, res) => {
+  app.get(/^(?!\/api|\/uploads).*/, (_req, res) => {
     res.sendFile(path.join(FRONTEND_DIST, "index.html"));
   });
 } else {
   console.warn("⚠️ Frontend dist not found at:", FRONTEND_DIST);
   console.warn("Make sure to build the frontend: cd frontend && npm run build");
-  app.get("*", (req, res) => {
-    res.status(404).json({ 
-      success: false, 
-      error: "Frontend build not found. Run: cd frontend && npm run build" 
+  app.get("*", (_req, res) => {
+    res.status(404).json({
+      success: false,
+      error: "Frontend build not found. Run: cd frontend && npm run build",
     });
   });
 }
@@ -401,7 +478,27 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ success: false, error: err.message || "Server error" });
 });
 
-// ---- START SERVER ----
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+// ---- START SERVER (IMPORTANT: wait for DB) ----
+async function start() {
+  if (!dbUrl || typeof dbUrl !== "string") {
+    console.error("❌ MONGODB_URI_GLOBAL missing in Render environment variables.");
+    console.error("   Add MONGODB_URI_GLOBAL with your Atlas connection string including DB name.");
+    process.exit(1);
+  }
+
+  console.log("🔌 Connecting to MongoDB...");
+  await mongoose.connect(dbUrl, {
+    serverSelectionTimeoutMS: 20000,
+    connectTimeoutMS: 20000,
+    socketTimeoutMS: 45000,
+  });
+
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+  });
+}
+
+start().catch((err) => {
+  console.error("❌ Failed to start server:", err.message);
+  process.exit(1);
 });
