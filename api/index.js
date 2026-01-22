@@ -17,6 +17,9 @@ const auth = require("../authentication");
 
 const app = express();
 
+// ✅ IMPORTANT on Render (behind proxy) so req.protocol becomes https
+app.set("trust proxy", 1);
+
 // ---------------- SETTINGS STORE (home poster + marquee) ----------------
 const SETTINGS_FILE = path.join(__dirname, "..", "data", "homeSettings.json");
 const SETTINGS_DIR = path.dirname(SETTINGS_FILE);
@@ -38,11 +41,21 @@ function writeHomeSettings(next) {
 
 // ---- CONFIG ----
 const PORT = process.env.PORT || 5000;
-const MONGODB_URI =
-  process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/media_upload_db";
+
+// ✅ Prefer Render env MONGODB_URI_GLOBAL
+const DB_URL =
+  process.env.MONGODB_URI_GLOBAL ||
+  process.env.MONGODB_URI ||
+  process.env.MONGO_URL ||
+  "mongodb://127.0.0.1:27017/media_upload_db";
 
 // ---- MIDDLEWARE ----
-app.use(cors());
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: "20mb" }));
 
 // ✅ Serve all uploads
@@ -80,16 +93,59 @@ const GALLERY_UPLOAD_PATH = path.join(__dirname, "..", "uploads", "gallery");
 });
 
 // ---- MONGOOSE SETUP ----
-let mongooseConnected = false;
+let DB_READY = false;
 
-if (!mongooseConnected) {
-  mongoose
-    .connect(MONGODB_URI_GLOBAL)
-    .then(() => {
-      mongooseConnected = true;
-      console.log("✅ Connected to MongoDB at", MONGODB_URI_GLOBAL);
+mongoose.set("strictQuery", true);
+
+mongoose.connection.on("connected", () => {
+  DB_READY = true;
+  console.log("✅ MongoDB connected");
+});
+mongoose.connection.on("disconnected", () => {
+  DB_READY = false;
+  console.log("⚠️ MongoDB disconnected");
+});
+mongoose.connection.on("error", (err) => {
+  DB_READY = false;
+  console.error("❌ MongoDB error:", err.message);
+});
+
+// Connect once (serverless safe)
+let mongooseConnecting = null;
+async function connectMongoOnce() {
+  if (DB_READY) return;
+  if (mongooseConnecting) return mongooseConnecting;
+
+  mongooseConnecting = mongoose
+    .connect(DB_URL, {
+      serverSelectionTimeoutMS: 20000,
+      connectTimeoutMS: 20000,
+      socketTimeoutMS: 45000,
     })
-    .catch((err) => console.error("❌ MongoDB connection error:", err.message));
+    .then(() => {
+      console.log("✅ Connected to MongoDB at", DB_URL);
+      DB_READY = true;
+    })
+    .catch((err) => {
+      console.error("❌ MongoDB connection error:", err.message);
+      DB_READY = false;
+      throw err;
+    });
+
+  return mongooseConnecting;
+}
+
+// Ensure DB for API endpoints that need it
+async function requireDb(req, res, next) {
+  try {
+    await connectMongoOnce();
+    return next();
+  } catch {
+    return res.status(503).json({
+      success: false,
+      error: "Database not connected. Check MongoDB URI / Atlas IP whitelist.",
+    });
+  }
 }
 
 // ---- MONGOOSE MODELS ----
@@ -138,36 +194,36 @@ function makeSafeFileName(originalName) {
 }
 
 const imageStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: (_req, _file, cb) => {
     fs.mkdir(IMAGE_UPLOAD_PATH, { recursive: true }, (err) => cb(err, IMAGE_UPLOAD_PATH));
   },
-  filename: (_, file, cb) => cb(null, makeSafeFileName(file.originalname)),
+  filename: (_req, file, cb) => cb(null, makeSafeFileName(file.originalname)),
 });
 
 const videoStorage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, VIDEO_UPLOAD_PATH),
-  filename: (_, file, cb) => cb(null, makeSafeFileName(file.originalname)),
+  destination: (_req, _file, cb) => cb(null, VIDEO_UPLOAD_PATH),
+  filename: (_req, file, cb) => cb(null, makeSafeFileName(file.originalname)),
 });
 
 const bannerStorage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, BANNER_UPLOAD_PATH),
-  filename: (_, file, cb) => cb(null, makeSafeFileName(file.originalname)),
+  destination: (_req, _file, cb) => cb(null, BANNER_UPLOAD_PATH),
+  filename: (_req, file, cb) => cb(null, makeSafeFileName(file.originalname)),
 });
 
 const audioStorage = multer.diskStorage({
-  destination: (_, __, cb) => cb(null, AUDIO_UPLOAD_PATH),
-  filename: (_, file, cb) => cb(null, makeSafeFileName(file.originalname)),
+  destination: (_req, _file, cb) => cb(null, AUDIO_UPLOAD_PATH),
+  filename: (_req, file, cb) => cb(null, makeSafeFileName(file.originalname)),
 });
 
-function imageFileFilter(_, file, cb) {
+function imageFileFilter(_req, file, cb) {
   if (file.mimetype.startsWith("image/")) cb(null, true);
   else cb(new Error("Only image files are allowed!"), false);
 }
-function videoFileFilter(_, file, cb) {
+function videoFileFilter(_req, file, cb) {
   if (file.mimetype.startsWith("video/")) cb(null, true);
   else cb(new Error("Only video files are allowed!"), false);
 }
-function audioFileFilter(_, file, cb) {
+function audioFileFilter(_req, file, cb) {
   if (file.mimetype.startsWith("audio/")) cb(null, true);
   else cb(new Error("Only audio files are allowed!"), false);
 }
@@ -196,11 +252,20 @@ const uploadAudio = multer({
   limits: { fileSize: 100 * 1024 * 1024 },
 }).single("audio");
 
-// ---- BASIC HEALTH ----
+// ---- HEALTH ----
+app.get("/api/health", (_req, res) => {
+  res.json({
+    success: true,
+    dbReady: DB_READY,
+    mongooseState: mongoose.connection.readyState,
+  });
+});
+
+// ---- BASIC ----
 app.get("/", (_req, res) => res.redirect("/login"));
 
-// ✅ AUTH first
-app.use("/api/auth", auth.router);
+// ✅ AUTH first (needs DB because it queries users)
+app.use("/api/auth", requireDb, auth.router);
 
 // ---------------- HOME SETTINGS APIs ----------------
 app.get("/api/settings/home", (_req, res) => {
@@ -234,17 +299,18 @@ function handleImageUpload(req, res) {
       });
 
       res.json({ success: true, message: "Image uploaded & saved to DB", data: mediaDoc });
-    } catch {
+    } catch (e) {
+      console.error("❌ Media.create(image) failed:", e?.message || e);
       res.status(500).json({ success: false, error: "Image uploaded but failed to save in DB" });
     }
   });
 }
 
-app.post("/api/upload/image", adminForWrites, handleImageUpload);
-app.post("/upload/image", adminForWrites, handleImageUpload);
+app.post("/api/upload/image", requireDb, adminForWrites, handleImageUpload);
+app.post("/upload/image", requireDb, adminForWrites, handleImageUpload);
 
 // ---------------- VIDEO FILE UPLOAD (ADMIN ONLY) ----------------
-app.post("/api/upload/video", adminForWrites, (req, res) => {
+app.post("/api/upload/video", requireDb, adminForWrites, (req, res) => {
   uploadVideo(req, res, async (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No video file uploaded" });
@@ -262,14 +328,15 @@ app.post("/api/upload/video", adminForWrites, (req, res) => {
       });
 
       res.json({ success: true, message: "Video file uploaded & saved to DB", data: mediaDoc });
-    } catch {
+    } catch (e) {
+      console.error("❌ Media.create(video) failed:", e?.message || e);
       res.status(500).json({ success: false, error: "Video uploaded but failed to save in DB" });
     }
   });
 });
 
 // ---------------- BANNER IMAGE UPLOAD (ADMIN ONLY) ----------------
-app.post("/api/upload/banner", adminForWrites, (req, res) => {
+app.post("/api/upload/banner", requireDb, adminForWrites, (req, res) => {
   uploadBanner(req, res, async (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No banner file uploaded" });
@@ -296,7 +363,8 @@ app.post("/api/upload/banner", adminForWrites, (req, res) => {
         data: mediaDoc,
         posterUrl: fileUrl,
       });
-    } catch {
+    } catch (e) {
+      console.error("❌ Media.create(banner) failed:", e?.message || e);
       res.status(500).json({ success: false, error: "Banner uploaded but failed to save in DB" });
     }
   });
@@ -349,24 +417,29 @@ app.get("/api/audio/default", (_req, res) => {
 });
 
 // ---------------- ROUTES (ADMIN WRITE / PUBLIC READ) ----------------
-// ✅ ROUTES (ADMIN WRITE / PUBLIC READ)
-app.use("/api/videos", adminForWrites, videosRoutes);     // ✅ keep this FIRST
-app.use("/api/gallery", adminForWrites, galleryRoutes);
-app.use("/api/notifications", adminForWrites, notificationRoutes);
-app.use("/api", adminForWrites, contentRoutes);           // ✅ keep this LAST
+app.use("/api/videos", requireDb, adminForWrites, videosRoutes);
+app.use("/api/gallery", requireDb, adminForWrites, galleryRoutes);
+app.use("/api/notifications", requireDb, adminForWrites, notificationRoutes);
+app.use("/api", requireDb, adminForWrites, contentRoutes);
 
 // ---------------- FRONTEND (Vite dist) ----------------
 const FRONTEND_DIST = path.join(__dirname, "..", "frontend", "dist");
 
 if (fs.existsSync(FRONTEND_DIST)) {
   app.use(express.static(FRONTEND_DIST));
-  app.get(/^(?!\/api|\/uploads).*/, (req, res) => {
+  app.get(/^(?!\/api|\/uploads).*/, (_req, res) => {
     res.sendFile(path.join(FRONTEND_DIST, "index.html"));
   });
 } else {
   console.warn("⚠️ Frontend dist not found at:", FRONTEND_DIST);
-  app.get("*", (req, res) => {
-    res.status(404).json({ success: false, error: "Frontend build not found. Run frontend build." });
+
+  // ✅ FIX: don't use app.get("*") -> causes path-to-regexp crash on Render/Node22
+  app.use((req, res, next) => {
+    if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
+    return res.status(404).json({
+      success: false,
+      error: "Frontend build not found. Run: cd frontend && npm run build",
+    });
   });
 }
 
@@ -376,5 +449,4 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ success: false, error: err.message || "Server error" });
 });
 
-// Export for Vercel serverless
 module.exports = app;
