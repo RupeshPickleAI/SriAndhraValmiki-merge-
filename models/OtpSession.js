@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const otpSchema = new mongoose.Schema(
   {
     channel: { type: String, enum: ["email", "sms"], required: true },
-    identifier: { type: String, required: true }, // normalized email or phone
+    identifier: { type: String, required: true },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
 
     otpHash: { type: String, required: true },
@@ -17,7 +17,7 @@ const otpSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// TTL: auto delete after expiresAt
+// TTL
 otpSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.models.OtpSession || mongoose.model("OtpSession", otpSchema);

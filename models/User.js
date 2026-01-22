@@ -6,9 +6,8 @@ const userSchema = new mongoose.Schema(
     firstName: { type: String, trim: true, default: "" },
     lastName: { type: String, trim: true, default: "" },
 
-    // keep fields optional, but unique only when they are real strings (via partial indexes below)
     email: { type: String, trim: true, lowercase: true },
-    phone: { type: String, trim: true }, // E.164
+    phone: { type: String, trim: true },
 
     passwordHash: { type: String, required: true },
 
@@ -22,7 +21,6 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ✅ Unique only when value is a STRING (prevents dup key on null)
 userSchema.index(
   { email: 1 },
   { unique: true, partialFilterExpression: { email: { $type: "string" } } }

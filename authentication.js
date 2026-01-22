@@ -17,19 +17,33 @@ const {
   JWT_SECRET,
   JWT_EXPIRES_IN = "7d",
 
+  // Twilio (optional)
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_FROM_NUMBER,
 
+  // Gmail (or SMTP)
   GMAIL_USER,
   GMAIL_APP_PASSWORD,
+
+  // Optional generic SMTP (recommended for production)
+  SMTP_HOST,
+  SMTP_PORT,
+  SMTP_USER,
+  SMTP_PASS,
+  SMTP_SECURE,
+  MAIL_FROM,
+  MAIL_FROM_NAME,
 } = process.env;
 
 const JWT_SECRET_FINAL = JWT_SECRET || "dev_jwt_secret_change_me";
 
-// ✅ FIXED STATIC ADMIN (declare BEFORE routes use it)
+// ✅ FIXED STATIC ADMIN
 const STATIC_ADMIN_EMAIL_FINAL = "sriandhravalmiki@gmail.com";
 const STATIC_ADMIN_PASSWORD_FINAL = "rama@2026";
+
+// OTP Config
+const OTP_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // -------------------- HELPERS --------------------
 function normalizeEmail(email) {
@@ -57,7 +71,7 @@ function hashOtp(identifier, otp) {
     .digest("hex");
 }
 function getStoredPasswordHash(user) {
-  return user?.passwordHash || user?.password || null;
+  return user?.passwordHash || user?.password || null; // legacy fallback
 }
 function signToken(payload) {
   return jwt.sign(payload, JWT_SECRET_FINAL, { expiresIn: JWT_EXPIRES_IN });
@@ -86,7 +100,6 @@ function requireAdmin(req, res, next) {
   if (String(req.auth.email || "").toLowerCase() !== STATIC_ADMIN_EMAIL_FINAL) {
     return res.status(403).json({ success: false, error: "Invalid admin identity" });
   }
-
   return next();
 }
 
@@ -115,6 +128,7 @@ if (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN) {
 async function sendSmsOtp(phone, otp) {
   if (!twilioClient) throw new Error("Twilio not configured");
   if (!TWILIO_FROM_NUMBER) throw new Error("TWILIO_FROM_NUMBER missing");
+
   await twilioClient.messages.create({
     from: TWILIO_FROM_NUMBER,
     to: phone,
@@ -122,24 +136,67 @@ async function sendSmsOtp(phone, otp) {
   });
 }
 
-// -------------------- EMAIL (GMAIL SMTP) --------------------
+// -------------------- EMAIL (SMTP/GMAIL) --------------------
 function createMailer() {
-  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) return null;
-  const pass = String(GMAIL_APP_PASSWORD).replace(/\s/g, "");
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user: GMAIL_USER, pass },
-  });
+  // ✅ Prefer generic SMTP if provided (best for production)
+  if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
+    const port = Number(SMTP_PORT || 587);
+    const secure =
+      String(SMTP_SECURE || "").toLowerCase() === "true" ? true : port === 465;
+
+    const transporter = nodemailer.createTransport({
+      host: SMTP_HOST,
+      port,
+      secure,
+      auth: {
+        user: SMTP_USER,
+        pass: String(SMTP_PASS).replace(/\s/g, ""),
+      },
+    });
+
+    transporter.verify()
+      .then(() => console.log("✅ SMTP mailer verified"))
+      .catch((e) => console.error("❌ SMTP verify failed:", e?.message || e));
+
+    return transporter;
+  }
+
+  // ✅ Fallback to Gmail using port 587 (more reliable than 465 on some hosts)
+  if (GMAIL_USER && GMAIL_APP_PASSWORD) {
+    const pass = String(GMAIL_APP_PASSWORD).replace(/\s/g, "");
+
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 587,
+      secure: false,
+      requireTLS: true,
+      auth: { user: GMAIL_USER, pass },
+    });
+
+    transporter.verify()
+      .then(() => console.log("✅ Gmail mailer verified"))
+      .catch((e) => console.error("❌ Gmail verify failed:", e?.message || e));
+
+    return transporter;
+  }
+
+  console.warn("⚠️ Mailer not configured. Set SMTP_* or GMAIL_USER/GMAIL_APP_PASSWORD.");
+  return null;
 }
+
 const mailer = createMailer();
 
-async function sendEmailOtp(email, otp) {
-  if (!mailer) throw new Error("Email not configured (GMAIL_USER/GMAIL_APP_PASSWORD missing)");
+function getFromAddress() {
+  const name = String(MAIL_FROM_NAME || "Sri Andhra Valmiki").trim();
+  const from = String(MAIL_FROM || GMAIL_USER || SMTP_USER || "").trim();
+  return from ? `${name} <${from}>` : undefined;
+}
 
-  await mailer.sendMail({
-    from: `OTP Login <${GMAIL_USER}>`,
+async function sendEmailOtp(email, otp) {
+  if (!mailer) throw new Error("Email not configured (SMTP_* or GMAIL_USER/GMAIL_APP_PASSWORD missing)");
+
+  const info = await mailer.sendMail({
+    from: getFromAddress(),
     to: email,
     subject: "Your OTP Code",
     text: `Your OTP is ${otp}. It is valid for 5 minutes.`,
@@ -152,6 +209,48 @@ async function sendEmailOtp(email, otp) {
       </div>
     `,
   });
+
+  // ✅ Helpful Render logs (does NOT expose OTP)
+  console.log("✅ OTP email send result:", {
+    messageId: info?.messageId,
+    accepted: info?.accepted,
+    rejected: info?.rejected,
+    response: info?.response,
+  });
+
+  return info;
+}
+
+// -------------------- OTP SESSION HELPERS --------------------
+async function createAndSendOtp({ user, channel, identifier }) {
+  // invalidate old sessions
+  await OtpSession.updateMany(
+    { userId: user._id, channel, identifier, used: false },
+    { $set: { used: true } }
+  );
+
+  const otp = generateOtp();
+  const otpHash = hashOtp(identifier, otp);
+  const expiresAt = new Date(Date.now() + OTP_TTL_MS);
+
+  await OtpSession.create({
+    channel,
+    identifier,
+    userId: user._id,
+    otpHash,
+    expiresAt,
+    attempts: 0,
+    maxAttempts: 5,
+    used: false,
+  });
+
+  if (channel === "sms") {
+    await sendSmsOtp(identifier, otp);
+  } else {
+    await sendEmailOtp(identifier, otp);
+  }
+
+  return { expiresInSeconds: Math.floor(OTP_TTL_MS / 1000) };
 }
 
 // -------------------- ROUTES --------------------
@@ -227,6 +326,7 @@ router.post("/signup", async (req, res) => {
 });
 
 // ✅ USER LOGIN WITH PASSWORD
+// ✅ CHANGE: if NOT verified, server auto-sends OTP (email channel by default)
 router.post("/login/password", async (req, res) => {
   try {
     const email = normalizeEmail(req.body.email);
@@ -234,11 +334,8 @@ router.post("/login/password", async (req, res) => {
 
     if (!email) return res.status(400).json({ success: false, error: "Email is required" });
     if (!isEmail(email)) return res.status(400).json({ success: false, error: "Invalid email" });
-    if (!passwordOk(password)) {
-      return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
-    }
+    if (!passwordOk(password)) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
 
-    // prevent admin login via user endpoint
     if (email === STATIC_ADMIN_EMAIL_FINAL) {
       return res.status(403).json({ success: false, error: "Use /api/auth/admin/login for admin." });
     }
@@ -252,53 +349,58 @@ router.post("/login/password", async (req, res) => {
     const ok = await bcrypt.compare(password, storedHash);
     if (!ok) return res.status(401).json({ success: false, error: "Invalid password" });
 
-    // ✅ Legacy support: if flags missing, treat as verified and set true once
-    const emailFlagMissing = typeof user.isEmailVerified !== "boolean";
-    const phoneFlagMissing = typeof user.isPhoneVerified !== "boolean";
-    if (emailFlagMissing && phoneFlagMissing) {
-      user.isEmailVerified = true;
-      await user.save();
-    }
-
     const verified = !!user.isEmailVerified || !!user.isPhoneVerified;
-    if (!verified) {
+
+    // ✅ If verified => login immediately
+    if (verified) {
+      user.lastLoginAt = new Date();
+      await user.save();
+
+      const token = signToken({
+        userId: user._id.toString(),
+        role: user.role,
+        email: user.email || null,
+        phone: user.phone || null,
+      });
+
       return res.json({
         success: true,
-        otpRequired: true,
-        message: "OTP verification required. Call /api/auth/login/request-otp",
+        otpRequired: false,
+        token,
+        user: { id: user._id, role: user.role, email: user.email, phone: user.phone || null },
       });
     }
 
-    user.lastLoginAt = new Date();
-    await user.save();
-
-    const token = signToken({
-      userId: user._id.toString(),
-      role: user.role,
-      email: user.email || null,
-      phone: user.phone || null,
+    // ✅ Not verified => auto-send OTP to email
+    const { expiresInSeconds } = await createAndSendOtp({
+      user,
+      channel: "email",
+      identifier: user.email,
     });
 
     return res.json({
       success: true,
-      otpRequired: false,
-      token,
-      user: { id: user._id, role: user.role, email: user.email, phone: user.phone || null },
+      otpRequired: true,
+      otpSent: true,
+      message: "OTP sent to your email (check Inbox/Spam).",
+      expiresInSeconds,
     });
   } catch (e) {
     console.error("❌ login/password:", e?.message || e);
-    return res.status(500).json({ success: false, error: "Login failed" });
+    return res.status(500).json({ success: false, error: "Login failed", detail: e?.message || "" });
   }
 });
 
-// ✅ LOGIN - REQUEST OTP
+// ✅ LOGIN - REQUEST OTP (manual resend or signup flow)
 router.post("/login/request-otp", requestOtpLimiter, async (req, res) => {
   try {
     const channel = String(req.body.channel || "").trim();
     const identifierRaw = String(req.body.identifier || "").trim();
     const password = String(req.body.password || "");
 
-    if (!["email", "sms"].includes(channel)) return res.status(400).json({ success: false, error: 'channel must be "email" or "sms"' });
+    if (!["email", "sms"].includes(channel)) {
+      return res.status(400).json({ success: false, error: 'channel must be "email" or "sms"' });
+    }
     if (!identifierRaw) return res.status(400).json({ success: false, error: "identifier is required" });
     if (!passwordOk(password)) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
 
@@ -319,6 +421,7 @@ router.post("/login/request-otp", requestOtpLimiter, async (req, res) => {
     const ok = await bcrypt.compare(password, storedHash);
     if (!ok) return res.status(401).json({ success: false, error: "Invalid password" });
 
+    // If already verified on that channel -> just return token
     const alreadyVerified = channel === "email" ? !!user.isEmailVerified : !!user.isPhoneVerified;
     if (alreadyVerified) {
       user.lastLoginAt = new Date();
@@ -327,21 +430,18 @@ router.post("/login/request-otp", requestOtpLimiter, async (req, res) => {
       return res.json({ success: true, otpRequired: false, token, user: { id: user._id, role: user.role, email: user.email } });
     }
 
-    await OtpSession.updateMany({ userId: user._id, channel, identifier, used: false }, { $set: { used: true } });
+    const { expiresInSeconds } = await createAndSendOtp({ user, channel, identifier });
 
-    const otp = generateOtp();
-    const otpHash = hashOtp(identifier, otp);
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-    await OtpSession.create({ channel, identifier, userId: user._id, otpHash, expiresAt, attempts: 0, maxAttempts: 5, used: false });
-
-    if (channel === "sms") await sendSmsOtp(identifier, otp);
-    else await sendEmailOtp(identifier, otp);
-
-    return res.json({ success: true, otpRequired: true, message: "OTP sent", expiresInSeconds: 300 });
+    return res.json({ success: true, otpRequired: true, otpSent: true, message: "OTP sent", expiresInSeconds });
   } catch (e) {
     console.error("❌ login/request-otp:", e?.message || e);
-    return res.status(500).json({ success: false, error: "Failed to login", detail: e?.message || "" });
+    return res.status(500).json({
+      success: false,
+      error: "Failed to send OTP",
+      detail: e?.message || "",
+      mailerConfigured: !!mailer,
+      twilioConfigured: !!twilioClient,
+    });
   }
 });
 
@@ -359,7 +459,9 @@ router.post("/login/verify-otp", verifyOtpLimiter, async (req, res) => {
     if (!passwordOk(password)) return res.status(400).json({ success: false, error: "Password must be at least 8 characters" });
 
     const identifier = channel === "email" ? normalizeEmail(identifierRaw) : normalizePhone(identifierRaw);
-    if (identifier === STATIC_ADMIN_EMAIL_FINAL) return res.status(403).json({ success: false, error: "Use /api/auth/admin/login for admin." });
+    if (identifier === STATIC_ADMIN_EMAIL_FINAL) {
+      return res.status(403).json({ success: false, error: "Use /api/auth/admin/login for admin." });
+    }
 
     const user = await User.findOne(channel === "email" ? { email: identifier } : { phone: identifier });
     if (!user) return res.status(404).json({ success: false, error: "User not found" });
@@ -401,7 +503,13 @@ router.post("/login/verify-otp", verifyOtpLimiter, async (req, res) => {
     user.lastLoginAt = new Date();
     await user.save();
 
-    const token = signToken({ userId: user._id.toString(), role: user.role, email: user.email || null, phone: user.phone || null });
+    const token = signToken({
+      userId: user._id.toString(),
+      role: user.role,
+      email: user.email || null,
+      phone: user.phone || null,
+    });
+
     return res.json({ success: true, token, user: { id: user._id, role: user.role, email: user.email } });
   } catch (e) {
     console.error("❌ login/verify-otp:", e?.message || e);

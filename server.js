@@ -73,10 +73,19 @@ app.use(
 app.use(express.json({ limit: "20mb" }));
 
 // 📋 REQUEST LOGGER
+// 📋 REQUEST LOGGER (SAFE - masks secrets)
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
+
+  // mask body secrets
+  const safeBody = req.body && typeof req.body === "object" ? { ...req.body } : req.body;
+  if (safeBody && typeof safeBody === "object") {
+    if (safeBody.password) safeBody.password = "***";
+    if (safeBody.otp) safeBody.otp = "***";
+  }
+
   console.log(`\n📥 [${timestamp}] ${req.method} ${req.path}`);
-  console.log(`   Body:`, req.body);
+  console.log(`   Body:`, safeBody);
   console.log(`   Headers:`, { authorization: req.headers.authorization ? "***" : "none" });
 
   const originalJson = res.json;
@@ -87,6 +96,7 @@ app.use((req, res, next) => {
 
   next();
 });
+
 
 // ✅ Serve uploads
 app.use("/uploads", express.static(UPLOADS_ROOT));
