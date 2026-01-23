@@ -9,7 +9,7 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: MONGODB_URI_GLOBAL
+      - key: MONGODB_URI
         scope: run
       - key: JWT_SECRET
         scope: run

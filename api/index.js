@@ -42,9 +42,9 @@ function writeHomeSettings(next) {
 // ---- CONFIG ----
 const PORT = process.env.PORT || 5000;
 
-// ✅ FIX: use a real env variable (MONGODB_URI_GLOBAL was undefined in your file)
+// ✅ FIX: use a real env variable (MONGODB_URI was undefined in your file)
 const DB_URI =
-  process.env.MONGODB_URI_GLOBAL ||
+  process.env.MONGODB_URI ||
   process.env.MONGODB_URI ||
   process.env.MONGO_URL ||
   "mongodb://127.0.0.1:27017/media_upload_db";

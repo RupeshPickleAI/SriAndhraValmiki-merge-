@@ -44,7 +44,7 @@ const PORT = process.env.PORT || 5000;
 
 // ✅ MUST be set in Render Environment
 const dbUrl =
-  process.env.MONGODB_URI_GLOBAL ||
+  process.env.MONGODB_URI ||
   process.env.MONGODB_URI ||
   process.env.MONGO_URL ||
   "";
@@ -457,7 +457,7 @@ app.use((err, req, res, _next) => {
 // ---- START SERVER ----
 async function start() {
   if (!dbUrl) {
-    console.error("❌ MongoDB URI missing. Set MONGODB_URI_GLOBAL in Render Environment.");
+    console.error("❌ MongoDB URI missing. Set MONGODB_URI in Render Environment.");
     process.exit(1);
   }
 

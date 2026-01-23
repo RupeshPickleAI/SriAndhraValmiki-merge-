@@ -14,7 +14,7 @@ Before deploying, ensure you have:
 1. **Vercel Account**: Sign up at [vercel.com](https://vercel.com)
 2. **Git Repository**: Your code pushed to GitHub, GitLab, or Bitbucket
 3. **Environment Variables**: Prepare these secrets in Vercel dashboard:
-   - `MONGODB_URI_GLOBAL` - Your MongoDB connection string
+   - `MONGODB_URI` - Your MongoDB connection string
    - `JWT_SECRET` - JWT secret key
    - `SMTP_*` - Email configuration (if applicable)
    - Any other API keys or secrets
@@ -63,7 +63,7 @@ Vercel's serverless functions have `/tmp` directory for temporary storage (512MB
 ### ⚠️ Environment Variables
 Set these in Vercel Dashboard → Settings → Environment Variables:
 ```
-MONGODB_URI_GLOBAL=your_mongodb_connection_string
+MONGODB_URI=your_mongodb_connection_string
 JWT_SECRET=your_jwt_secret
 NODE_ENV=production
 ```
@@ -107,7 +107,7 @@ SENDGRID_API_KEY=your_sendgrid_key
 
 ### MongoDB Connection Issues
 - Verify MongoDB Atlas IP whitelist includes Vercel's IPs (0.0.0.0/0 for Vercel)
-- Check MONGODB_URI_GLOBAL format
+- Check MONGODB_URI format
 
 ### File Upload Not Working
 - Vercel `/tmp` directory is temporary
