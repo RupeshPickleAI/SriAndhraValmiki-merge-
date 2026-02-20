@@ -7,6 +7,7 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const mongoose = require("mongoose");
+const crypto = require("crypto");
 
 // route modules
 const contentRoutes = require("./contentRoutes");
@@ -45,7 +46,6 @@ const PORT = process.env.PORT || 5000;
 // ✅ MUST be set in Render Environment
 const dbUrl =
   process.env.MONGODB_URI ||
-  process.env.MONGODB_URI ||
   process.env.MONGO_URL ||
   "";
 
@@ -72,12 +72,10 @@ app.use(
 
 app.use(express.json({ limit: "20mb" }));
 
-// 📋 REQUEST LOGGER
 // 📋 REQUEST LOGGER (SAFE - masks secrets)
 app.use((req, res, next) => {
   const timestamp = new Date().toISOString();
 
-  // mask body secrets
   const safeBody = req.body && typeof req.body === "object" ? { ...req.body } : req.body;
   if (safeBody && typeof safeBody === "object") {
     if (safeBody.password) safeBody.password = "***";
@@ -96,7 +94,6 @@ app.use((req, res, next) => {
 
   next();
 });
-
 
 // ✅ Serve uploads
 app.use("/uploads", express.static(UPLOADS_ROOT));
@@ -163,8 +160,19 @@ const Media = mongoose.models.Media || mongoose.model("Media", mediaSchema);
 // ---- AUDIO LOCAL JSON ----
 const AUDIO_DB_PATH = path.join(__dirname, "audio-db.json");
 
+function ensureAudioDbFile() {
+  try {
+    if (!fs.existsSync(AUDIO_DB_PATH)) {
+      fs.writeFileSync(AUDIO_DB_PATH, JSON.stringify([], null, 2), "utf8");
+    }
+  } catch (e) {
+    console.error("❌ Failed to ensure audio-db.json:", e);
+  }
+}
+
 function readAudioDb() {
   try {
+    ensureAudioDbFile();
     const raw = fs.readFileSync(AUDIO_DB_PATH, "utf8");
     const data = JSON.parse(raw);
     return Array.isArray(data) ? data : [];
@@ -221,10 +229,29 @@ function audioFileFilter(_req, file, cb) {
   else cb(new Error("Only audio files are allowed!"), false);
 }
 
-const uploadImage = multer({ storage: imageStorage, fileFilter: imageFileFilter, limits: { fileSize: 20 * 1024 * 1024 } }).single("image");
-const uploadVideo = multer({ storage: videoStorage, fileFilter: videoFileFilter, limits: { fileSize: 200 * 1024 * 1024 } }).single("video");
-const uploadBanner = multer({ storage: bannerStorage, fileFilter: imageFileFilter, limits: { fileSize: 20 * 1024 * 1024 } }).single("banner");
-const uploadAudio = multer({ storage: audioStorage, fileFilter: audioFileFilter, limits: { fileSize: 100 * 1024 * 1024 } }).single("audio");
+const uploadImage = multer({
+  storage: imageStorage,
+  fileFilter: imageFileFilter,
+  limits: { fileSize: 20 * 1024 * 1024 },
+}).single("image");
+
+const uploadVideo = multer({
+  storage: videoStorage,
+  fileFilter: videoFileFilter,
+  limits: { fileSize: 200 * 1024 * 1024 },
+}).single("video");
+
+const uploadBanner = multer({
+  storage: bannerStorage,
+  fileFilter: imageFileFilter,
+  limits: { fileSize: 20 * 1024 * 1024 },
+}).single("banner");
+
+const uploadAudio = multer({
+  storage: audioStorage,
+  fileFilter: audioFileFilter,
+  limits: { fileSize: 100 * 1024 * 1024 },
+}).single("audio");
 
 // ---- BASIC ----
 app.get("/api/health", (_req, res) => {
@@ -234,8 +261,6 @@ app.get("/api/health", (_req, res) => {
     mongooseState: mongoose.connection.readyState,
   });
 });
-
-app.get("/", (_req, res) => res.redirect("/login"));
 
 // ✅ Admin-only for ALL write methods
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -254,7 +279,7 @@ app.get("/api/settings/home", (_req, res) => {
   res.json({ success: true, data: s });
 });
 
-app.put("/api/settings/home", adminForWrites, (req, res) => {
+app.put("/api/settings/home", requireDb, adminForWrites, (req, res) => {
   const current = readHomeSettings();
   const next = { ...current, ...req.body, updatedAt: new Date().toISOString() };
   writeHomeSettings(next);
@@ -293,11 +318,11 @@ function handleImageUpload(req, res) {
   });
 }
 
-app.post("/api/upload/image", adminForWrites, handleImageUpload);
-app.post("/upload/image", adminForWrites, handleImageUpload);
+app.post("/api/upload/image", requireDb, adminForWrites, handleImageUpload);
+app.post("/upload/image", requireDb, adminForWrites, handleImageUpload);
 
 // ---------------- VIDEO UPLOAD ----------------
-app.post("/api/upload/video", adminForWrites, (req, res) => {
+app.post("/api/upload/video", requireDb, adminForWrites, (req, res) => {
   if (!DB_READY) return res.status(503).json({ success: false, error: "Database not connected." });
 
   uploadVideo(req, res, async (err) => {
@@ -324,7 +349,7 @@ app.post("/api/upload/video", adminForWrites, (req, res) => {
 });
 
 // ---------------- BANNER UPLOAD ----------------
-app.post("/api/upload/banner", adminForWrites, (req, res) => {
+app.post("/api/upload/banner", requireDb, adminForWrites, (req, res) => {
   if (!DB_READY) return res.status(503).json({ success: false, error: "Database not connected." });
 
   uploadBanner(req, res, async (err) => {
@@ -361,7 +386,7 @@ app.post("/api/upload/banner", adminForWrites, (req, res) => {
 });
 
 // ---------------- AUDIO UPLOAD ----------------
-app.post("/api/upload/audio", adminForWrites, (req, res) => {
+app.post("/api/upload/audio", requireDb, adminForWrites, (req, res) => {
   uploadAudio(req, res, (err) => {
     if (err) return res.status(400).json({ success: false, error: err.message });
     if (!req.file) return res.status(400).json({ success: false, error: "No audio file uploaded" });
@@ -369,8 +394,13 @@ app.post("/api/upload/audio", adminForWrites, (req, res) => {
     const fileUrl = buildFileUrl(req, `/uploads/audio/${req.file.filename}`);
 
     const list = readAudioDb();
+
+    const id =
+      (crypto.randomUUID && crypto.randomUUID()) ||
+      `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+
     const audioItem = {
-      id: Date.now().toString(),
+      id: String(id),
       originalName: req.file.originalname,
       fileName: req.file.filename,
       url: fileUrl,
@@ -406,6 +436,43 @@ app.get("/api/audio/default", (_req, res) => {
   }
 });
 
+// ✅ NEW: AUDIO DELETE (this fixes your 404)
+app.delete("/api/audio/:id", requireDb, adminForWrites, (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const list = readAudioDb();
+    const idx = list.findIndex((x) => String(x.id) === String(id));
+
+    if (idx === -1) {
+      return res.status(404).json({ success: false, error: "Audio not found" });
+    }
+
+    const removed = list[idx];
+    list.splice(idx, 1);
+    writeAudioDb(list);
+
+    // Delete file from disk (best-effort)
+    const fileName =
+      removed.fileName ||
+      (removed.url ? path.basename(String(removed.url)) : null);
+
+    if (fileName) {
+      const fullPath = path.join(AUDIO_UPLOAD_PATH, fileName);
+      if (fs.existsSync(fullPath)) {
+        fs.unlinkSync(fullPath);
+      } else {
+        console.warn("⚠️ Audio file not found on disk:", fullPath);
+      }
+    }
+
+    return res.json({ success: true, message: "Audio deleted", data: removed });
+  } catch (e) {
+    console.error("❌ Error deleting audio:", e);
+    return res.status(500).json({ success: false, error: "Failed to delete audio" });
+  }
+});
+
 // ---------------- ROUTES ----------------
 app.use("/api/videos", requireDb, adminForWrites, videosRoutes);
 app.use("/api/gallery", requireDb, adminForWrites, galleryRoutes);
@@ -435,7 +502,6 @@ if (FRONTEND_DIST) {
   console.warn("   Build it on Render using: cd frontend && npm install && npm run build");
 
   // ✅ IMPORTANT FIX: DO NOT use app.get("*") (crashes with path-to-regexp)
-  // Safe fallback middleware instead:
   app.use((req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) return next();
     return res.status(404).json({
