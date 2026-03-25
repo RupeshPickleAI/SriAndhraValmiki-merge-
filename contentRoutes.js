@@ -365,14 +365,18 @@ function pdfFilter(_, file, cb) {
 const uploadPdf = multer({
   storage: pdfStorage,
   fileFilter: pdfFilter,
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
 }).single("file");
 
 // POST /api/content/pdfs (multipart: file + parentType + parentId)
 router.post("/content/pdfs", (req, res) => {
   uploadPdf(req, res, async (err) => {
     try {
-      if (err) return res.status(400).json({ success: false, error: err.message });
+      if (err) {
+        const message =
+          err.code === "LIMIT_FILE_SIZE" ? "File too large (max 500MB)" : err.message;
+        return res.status(400).json({ success: false, error: message });
+      }
       if (!req.file) return res.status(400).json({ success: false, error: "No PDF uploaded" });
 
       const { parentType, parentId, title, description } = req.body;
@@ -438,12 +442,16 @@ router.put("/content/pdfs/:id", (req, res) => {
   const uploadOptional = multer({
     storage: pdfStorage,
     fileFilter: pdfFilter,
-    limits: { fileSize: 50 * 1024 * 1024 },
+    limits: { fileSize: 500 * 1024 * 1024 },
   }).single("file");
 
   uploadOptional(req, res, async (err) => {
     try {
-      if (err) return res.status(400).json({ success: false, error: err.message });
+      if (err) {
+        const message =
+          err.code === "LIMIT_FILE_SIZE" ? "File too large (max 500MB)" : err.message;
+        return res.status(400).json({ success: false, error: message });
+      }
 
       const doc = await Pdf.findById(req.params.id);
       if (!doc) return res.status(404).json({ success: false, error: "PDF not found" });
