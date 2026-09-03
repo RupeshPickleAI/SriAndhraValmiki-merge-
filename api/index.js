@@ -14,6 +14,7 @@ const galleryRoutes = require("../galleryRoutes");
 const notificationRoutes = require("../notificationRoutes");
 const videosRoutes = require("../videosRoutes");
 const auth = require("../authentication");
+const visitorTracking = require("../visitorTracking");
 
 const app = express();
 
@@ -57,6 +58,7 @@ app.use(
   })
 );
 app.use(express.json({ limit: "20mb" }));
+app.use(visitorTracking.trackPublicPageView);
 
 // ✅ Serve all uploads
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
@@ -125,6 +127,7 @@ app.get("/", (_req, res) => res.redirect("/login"));
 
 // ✅ AUTH first
 app.use("/api/auth", auth.router);
+app.use("/api/analytics", visitorTracking.router);
 
 // ---------------- HOME SETTINGS APIs ----------------
 app.get("/api/settings/home", (_req, res) => {

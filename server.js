@@ -15,6 +15,7 @@ const galleryRoutes = require("./galleryRoutes");
 const notificationRoutes = require("./notificationRoutes");
 const videosRoutes = require("./videosRoutes");
 const auth = require("./authentication");
+const visitorTracking = require("./visitorTracking");
 
 const app = express();
 
@@ -71,6 +72,9 @@ app.use(
 );
 
 app.use(express.json({ limit: "20mb" }));
+
+// Track public document navigations before the SPA/static middleware runs.
+app.use(visitorTracking.trackPublicPageView);
 
 // 📋 REQUEST LOGGER (SAFE - masks secrets)
 app.use((req, res, next) => {
@@ -272,6 +276,7 @@ function adminForWrites(req, res, next) {
 
 // ✅ AUTH first (needs DB)
 app.use("/api/auth", requireDb, auth.router);
+app.use("/api/analytics", requireDb, visitorTracking.router);
 
 // ---------------- HOME SETTINGS APIs ----------------
 app.get("/api/settings/home", (_req, res) => {
@@ -534,9 +539,15 @@ async function start() {
     socketTimeoutMS: 45000,
   });
 
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+  const server = app.listen(PORT, () => {
+    console.log(` Server running on port ${PORT}`);
   });
+
+  // Large uploads (e.g., 500MB PDFs) can take several minutes on slower networks.
+  // Node's default request timeout can close the connection mid-upload, which often
+  // shows up as a 502 at the proxy/load balancer.
+  server.requestTimeout = 0; // disable request timeout
+  server.headersTimeout = 2 * 60 * 1000; // keep some protection against slowloris
 }
 
 start().catch((err) => {
